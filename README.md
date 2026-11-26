@@ -25,27 +25,19 @@ Clicking any station pin (or selecting it from the searchable, filterable sideba
      - `http://localhost:*/*` *(optional, for local testing)*
    - **API restrictions → Restrict key**: select **Maps JavaScript API**, **Places API (New)**, and **Places UI Kit** (if present).
 
-### 2. Configure the site
+### 2. Publish on GitHub Pages (via GitHub Actions Secret — Recommended)
 
-Open `config.js` and paste your HTTP-referrer-restricted API key:
+This repo includes [.github/workflows/deploy.yml](.github/workflows/deploy.yml), which keeps your API key out of git history and injects it into `config.js` during deployment:
 
-```js
-window.APP_CONFIG = {
-  googleMapsApiKey: "YOUR_RESTRICTED_API_KEY",
-  mapId: "DEMO_MAP_ID",
-};
-```
+1. Push the repository to GitHub (keep `googleMapsApiKey: ""` blank in `config.js`).
+2. In your GitHub repo, go to **Settings → Secrets and variables → Actions → New repository secret**:
+   - **Name:** `GOOGLE_MAPS_API_KEY`
+   - **Secret:** paste your HTTP-referrer-restricted Google Maps API key
+3. Go to **Settings → Pages** and under **Build and deployment → Source**, choose **GitHub Actions**.
+4. Trigger a deploy by pushing to `main` or running **Actions → Deploy to GitHub Pages → Run workflow**.
+5. Visit `https://<your-username>.github.io/<repo-name>/`.
 
-*(Optional: you can also test locally without modifying `config.js` by pasting a key into the in-app setup modal — stored only in `localStorage` — or by appending `?key=YOUR_API_KEY` to the URL.)*
-
-### 3. Publish on GitHub Pages
-
-No build step is needed — this is 100% static HTML, CSS, and JavaScript.
-
-1. Push the repository to GitHub.
-2. In your repository settings, go to **Settings → Pages**.
-3. Under **Build and deployment**, select **Deploy from a branch** (`main` / `/ (root)`).
-4. Visit `https://<your-username>.github.io/<repo-name>/`.
+*(For local testing without touching `config.js`, paste your key into the in-app setup prompt — stored only in `localStorage` — or append `?key=YOUR_API_KEY` to the URL.)*
 
 ---
 

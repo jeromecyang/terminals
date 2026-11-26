@@ -1,4 +1,6 @@
 :root {
+  color-scheme: light;
+
   /* Heritage Rail Atlas Palette */
   --bg-parchment: #faf7f2;
   --bg-surface: #ffffff;
@@ -10,6 +12,19 @@
   --ink-primary: #1c1a17;
   --ink-secondary: #565047;
   --ink-muted: #7a7266;
+
+  /* Google Places UI Kit Light Theme Overrides */
+  --gmp-mat-color-surface: #ffffff;
+  --gmp-mat-color-on-surface: #1c1a17;
+  --gmp-mat-color-on-surface-variant: #4a4640;
+  --gmp-mat-color-primary: #146c43;
+  --gmp-mat-color-outline-decorative: #e2d9cb;
+  --gmp-mat-color-positive: #146c43;
+  --gmp-mat-color-negative: #b8432e;
+  --gmp-color-surface: #ffffff;
+  --gmp-color-on-surface: #1c1a17;
+  --gmp-color-on-surface-variant: #4a4640;
+  --gmp-color-primary: #146c43;
 
   /* Status Colors: Distinct, Accessible, Semantically Clear */
   --active-main: #146c43;
@@ -544,13 +559,50 @@ body {
 /* ==========================================================================
    Google Maps InfoWindow + Place Card Wrapper
    ========================================================================== */
+.gm-style-iw-c,
+.gm-style-iw-d,
+.gm-style-iw-ch {
+  color-scheme: light;
+  color: var(--ink-primary) !important;
+}
+
+.iw-header-title {
+  margin: 0;
+  padding: 2px 8px 0 0;
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: #1c1a17 !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
 .iw-wrapper {
   width: 312px;
   max-width: calc(100vw - 72px);
   font-family: var(--font-sans);
-  color: var(--ink-primary);
+  color: #1c1a17;
+  color-scheme: light;
   margin: 0;
   padding: 0;
+}
+
+.iw-wrapper gmp-place-details-compact {
+  color-scheme: light;
+  background: #ffffff;
+  color: #1c1a17;
+  --gmp-mat-color-surface: #ffffff;
+  --gmp-mat-color-on-surface: #1c1a17;
+  --gmp-mat-color-on-surface-variant: #4a4640;
+  --gmp-mat-color-primary: #146c43;
+  --gmp-mat-color-outline-decorative: #e2d9cb;
+  --gmp-mat-color-positive: #146c43;
+  --gmp-mat-color-negative: #b8432e;
+  --gmp-color-surface: #ffffff;
+  --gmp-color-on-surface: #1c1a17;
+  --gmp-color-on-surface-variant: #4a4640;
+  --gmp-color-primary: #146c43;
 }
 
 .iw-status-bar {

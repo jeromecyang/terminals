@@ -1,0 +1,60 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Stage static files and generate config.js
+        env:
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          GOOGLE_MAPS_MAP_ID: ${{ vars.GOOGLE_MAPS_MAP_ID }}
+        run: |
+          mkdir -p _site
+          cp index.html styles.css stations.js app.js _site/
+          python3 - <<'PY'
+          import json
+          import os
+
+          api_key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
+          map_id = os.environ.get("GOOGLE_MAPS_MAP_ID", "").strip() or "DEMO_MAP_ID"
+
+          if not api_key:
+              print("::warning::GOOGLE_MAPS_API_KEY secret is empty; visitors will see the API key setup prompt.")
+
+          with open("_site/config.js", "w", encoding="utf-8") as f:
+              f.write("window.APP_CONFIG = ")
+              json.dump({"googleMapsApiKey": api_key, "mapId": map_id}, f, indent=2)
+              f.write(";\n")
+          PY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "_site"
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

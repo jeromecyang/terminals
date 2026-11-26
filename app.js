@@ -24,6 +24,7 @@
   let infoWindow = null;
   let PlaceClass = null;
   let AdvancedMarkerClass = null;
+  let LatLngBoundsClass = null;
   const markersById = new Map();
   const placeIdCache = loadPlaceIdCache();
 
@@ -415,12 +416,19 @@
     try {
       await loadGoogleMapsScript(apiKey);
 
-      const [{ Map, InfoWindow }, { AdvancedMarkerElement }, { Place }] = await Promise.all([
+      const [
+        { LatLngBounds, ControlPosition },
+        { Map, InfoWindow },
+        { AdvancedMarkerElement },
+        { Place },
+      ] = await Promise.all([
+        google.maps.importLibrary("core"),
         google.maps.importLibrary("maps"),
         google.maps.importLibrary("marker"),
         google.maps.importLibrary("places"),
       ]);
 
+      LatLngBoundsClass = LatLngBounds;
       PlaceClass = Place;
       AdvancedMarkerClass = AdvancedMarkerElement;
 
@@ -430,7 +438,7 @@
         mapId: config.mapId || "DEMO_MAP_ID",
         mapTypeControl: true,
         mapTypeControlOptions: {
-          position: google.maps.ControlPosition.TOP_RIGHT,
+          position: ControlPosition.TOP_RIGHT,
         },
         streetViewControl: true,
         fullscreenControl: false,
@@ -548,7 +556,7 @@
       return;
     }
 
-    const bounds = new google.maps.LatLngBounds();
+    const bounds = new LatLngBoundsClass();
     for (const station of visible) {
       bounds.extend({ lat: station.lat, lng: station.lng });
     }
@@ -626,8 +634,13 @@
     // Prevent stale async updates when user clicks rapidly across multiple pins
     const requestToken = ++state.activeRequestToken;
 
-    // Open InfoWindow immediately with heritage status header + loading skeleton
-    const container = buildInfoWindowShell(station);
+    // Open InfoWindow immediately with station title header + heritage status + loading skeleton
+    const headerEl = buildInfoWindowHeader(station);
+    const hasHeaderApi = typeof infoWindow.setHeaderContent === "function";
+    if (hasHeaderApi) {
+      infoWindow.setHeaderContent(headerEl);
+    }
+    const container = buildInfoWindowShell(station, hasHeaderApi ? null : headerEl);
     infoWindow.setContent(container);
     infoWindow.open({ anchor: marker, map });
 
@@ -645,20 +658,44 @@
     } catch (err) {
       if (requestToken !== state.activeRequestToken) return;
       console.warn(`Place lookup failed for ${station.name}:`, err);
+      const detail = err && err.message ? err.message : String(err || "");
       renderFallbackCard(
         container,
         station,
-        "Unable to load the Google Place card. Confirm that Places API (New) and Places UI Kit are enabled for your API key."
+        "Unable to load the Google Place card. Confirm that Places API (New) and Places UI Kit are enabled for your API key.",
+        detail
       );
     }
   }
 
-  function buildInfoWindowShell(station) {
+  function buildInfoWindowHeader(station) {
+    const title = document.createElement("h3");
+    title.className = "iw-header-title";
+    title.textContent = station.name;
+    // Inline styles ensure visibility even inside Google Maps' InfoWindow shadow/slot rules
+    title.style.margin = "0";
+    title.style.padding = "2px 8px 0 0";
+    title.style.fontFamily = '"Fraunces", Georgia, "Times New Roman", serif';
+    title.style.fontSize = "1rem";
+    title.style.fontWeight = "600";
+    title.style.lineHeight = "1.25";
+    title.style.color = "#1c1a17";
+    return title;
+  }
+
+  function buildInfoWindowShell(station, inlineHeaderEl = null) {
     const isActive = station.status === "active";
     const statusText = isActive ? "In Rail Use" : "Defunct / Repurposed";
 
     const wrapper = document.createElement("div");
     wrapper.className = "iw-wrapper";
+    wrapper.style.colorScheme = "light";
+    wrapper.style.color = "#1c1a17";
+
+    if (inlineHeaderEl) {
+      inlineHeaderEl.style.marginBottom = "6px";
+      wrapper.appendChild(inlineHeaderEl);
+    }
 
     const statusBar = document.createElement("div");
     statusBar.className = "iw-status-bar";
@@ -711,10 +748,10 @@
       const request = {
         textQuery: attempt.textQuery,
         fields: ["id"],
-        locationBias: new google.maps.Circle({
+        locationBias: {
           center: { lat: station.lat, lng: station.lng },
           radius: attempt.radius,
-        }),
+        },
         maxResultCount: 1,
       };
 
@@ -735,13 +772,28 @@
     const placeDetails = document.createElement("gmp-place-details-compact");
     placeDetails.setAttribute("orientation", "vertical");
     placeDetails.setAttribute("truncation-preferred", "");
-    // Inline styles are required because InfoWindow content lives in a shadow-isolated slot
+
+    // Inline styles + explicit light-theme CSS variables prevent OS Dark Mode from
+    // rendering light/white Place Card text against Google Maps' white InfoWindow.
     placeDetails.style.width = "300px";
     placeDetails.style.maxWidth = "100%";
     placeDetails.style.display = "block";
     placeDetails.style.border = "none";
     placeDetails.style.boxShadow = "none";
-    placeDetails.style.background = "transparent";
+    placeDetails.style.colorScheme = "light";
+    placeDetails.style.background = "#ffffff";
+    placeDetails.style.color = "#1c1a17";
+    placeDetails.style.setProperty("--gmp-mat-color-surface", "#ffffff");
+    placeDetails.style.setProperty("--gmp-mat-color-on-surface", "#1c1a17");
+    placeDetails.style.setProperty("--gmp-mat-color-on-surface-variant", "#4a4640");
+    placeDetails.style.setProperty("--gmp-mat-color-primary", "#146c43");
+    placeDetails.style.setProperty("--gmp-mat-color-outline-decorative", "#e2d9cb");
+    placeDetails.style.setProperty("--gmp-mat-color-positive", "#146c43");
+    placeDetails.style.setProperty("--gmp-mat-color-negative", "#b8432e");
+    placeDetails.style.setProperty("--gmp-color-surface", "#ffffff");
+    placeDetails.style.setProperty("--gmp-color-on-surface", "#1c1a17");
+    placeDetails.style.setProperty("--gmp-color-on-surface-variant", "#4a4640");
+    placeDetails.style.setProperty("--gmp-color-primary", "#146c43");
 
     const placeRequest = document.createElement("gmp-place-details-place-request");
     placeRequest.setAttribute("place", placeId);
@@ -769,10 +821,12 @@
       if (settled || requestToken !== state.activeRequestToken) return;
       settled = true;
       console.warn(`Places UI Kit error for ${station.name}:`, event);
+      const detail = event && event.error && event.error.message ? event.error.message : "";
       renderFallbackCard(
         container,
         station,
-        "The Google Place card could not be rendered. Ensure Places API (New) and Places UI Kit are enabled on your API key."
+        "The Google Place card could not be rendered. Ensure Places API (New) and Places UI Kit are enabled on your API key.",
+        detail
       );
     };
 
@@ -793,13 +847,19 @@
     }, 3500);
   }
 
-  function renderFallbackCard(container, station, note) {
+  function renderFallbackCard(container, station, note, technicalDetail = "") {
     const body = container.querySelector(".iw-body");
     if (!body) return;
 
     const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
       station.placeQuery || `${station.name}, ${station.city}, ${station.state}`
     )}`;
+
+    const detailHtml = technicalDetail
+      ? `<p class="iw-fallback-note" style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.7rem; word-break: break-word;">${escapeHtml(
+          technicalDetail
+        )}</p>`
+      : "";
 
     body.innerHTML = `
       <div class="iw-fallback">
@@ -808,6 +868,7 @@
           station.opened ? ` · Opened ${escapeHtml(String(station.opened))}` : ""
         }</p>
         <p class="iw-fallback-note">${escapeHtml(note)}</p>
+        ${detailHtml}
         <a class="iw-maps-link" href="${mapsUrl}" target="_blank" rel="noopener noreferrer">
           View on Google Maps ↗
         </a>
