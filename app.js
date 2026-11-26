@@ -72,6 +72,11 @@
       setSidebarCollapsed(true);
     }
 
+    const hasBundledKey = Boolean((config.googleMapsApiKey || "").trim());
+    if (hasBundledKey && dom.apiKeyBtn) {
+      dom.apiKeyBtn.hidden = true;
+    }
+
     const apiKey = resolveApiKey();
     if (apiKey) {
       dom.setupOverlay.hidden = true;
@@ -379,6 +384,16 @@
         );
       };
 
+      const callbackName = "__historicStationsMapsReady";
+      window[callbackName] = () => {
+        delete window[callbackName];
+        if (window.google && window.google.maps && window.google.maps.importLibrary) {
+          resolve();
+        } else {
+          reject(new Error("Google Maps API callback fired without importLibrary."));
+        }
+      };
+
       const existing = document.getElementById("google-maps-sdk");
       if (existing) {
         existing.remove();
@@ -392,21 +407,30 @@
         key: apiKey,
         v: "weekly",
         loading: "async",
+        callback: callbackName,
       });
       script.src = `https://maps.googleapis.com/maps/api/js?${params.toString()}`;
-      script.onload = () => {
-        if (window.google && window.google.maps && window.google.maps.importLibrary) {
-          resolve();
-        } else {
-          reject(new Error("Google Maps API loaded without importLibrary."));
-        }
+      script.onerror = () => {
+        delete window[callbackName];
+        reject(new Error("Failed to load Google Maps JavaScript API script."));
       };
-      script.onerror = () => reject(new Error("Failed to load Google Maps JavaScript API."));
       document.head.appendChild(script);
     });
   }
 
   function showSetupError(message) {
+    const hasBundledKey = Boolean((config.googleMapsApiKey || "").trim());
+    if (hasBundledKey) {
+      const badge = dom.setupOverlay.querySelector(".setup-badge");
+      const title = dom.setupOverlay.querySelector("#setup-title");
+      const desc = dom.setupOverlay.querySelector(".setup-desc");
+      const help = dom.setupOverlay.querySelector(".setup-help");
+      if (badge) badge.textContent = "Map Unavailable";
+      if (title) title.textContent = "Google Maps Could Not Load";
+      if (desc) desc.textContent = "The interactive map is temporarily unavailable. You can still browse and search all 77 historic train stations in the directory.";
+      if (dom.apiKeyForm) dom.apiKeyForm.hidden = true;
+      if (help) help.hidden = true;
+    }
     dom.setupOverlay.hidden = false;
     dom.setupError.textContent = message;
     dom.setupError.hidden = false;
@@ -459,8 +483,9 @@
       fitMapToVisibleStations();
     } catch (err) {
       console.error("Failed to initialize Google Maps:", err);
+      const detail = err && err.message ? ` (${err.message})` : "";
       showSetupError(
-        "Unable to initialize Google Maps. Verify your API key and confirm that Maps JavaScript API and Places API (New) are enabled."
+        `Unable to initialize Google Maps${detail}. Verify your API key and confirm that Maps JavaScript API and Places API (New) are enabled.`
       );
     }
   }
