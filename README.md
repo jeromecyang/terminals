@@ -1,4 +1,4 @@
-# Historic American Train Stations — Interactive Map
+# Historic American Train Stations — Interactive Map*
 
 A static, GitHub Pages–ready interactive map showcasing **77 historic train stations across the United States**:
 
