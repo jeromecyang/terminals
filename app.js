@@ -28,6 +28,20 @@
   const markersById = new Map();
   const placeIdCache = loadPlaceIdCache();
 
+  // InfoWindow auto-pan & resize tracking
+  let iwResizeObserver = null;
+  let iwDomReadyListener = null;
+  let iwMapDragListener = null;
+  let iwMapWheelHandler = null;
+  let iwIdleListener = null;
+  let iwInitialIdleListener = null;
+  let iwRafId = null;
+  let iwFallbackTimer = null;
+  let iwPanning = false;
+  let iwPendingReposition = false;
+  let iwUserInteracted = false;
+  let iwPanCount = 0;
+
   // DOM references
   const dom = {
     app: document.getElementById("app"),
@@ -472,9 +486,11 @@
       infoWindow = new InfoWindow({
         ariaLabel: "Historic train station Google Place card",
         maxWidth: 340,
+        disableAutoPan: true,
       });
 
       infoWindow.addListener("closeclick", () => {
+        cleanupInfoWindowTracking();
         clearSelectedMarker();
       });
 
@@ -564,6 +580,7 @@
     }
 
     if (state.selectedId && !visibleIds.has(state.selectedId)) {
+      cleanupInfoWindowTracking();
       if (infoWindow) infoWindow.close();
       clearSelectedMarker();
     }
@@ -572,6 +589,7 @@
   function fitMapToVisibleStations() {
     if (!state.mapReady || !map) return;
 
+    cleanupInfoWindowTracking();
     const visible = getFilteredStations();
     if (visible.length === 0) return;
 
@@ -650,14 +668,27 @@
       setSidebarCollapsed(true);
     }
 
-    // Smooth camera focus
-    map.panTo({ lat: station.lat, lng: station.lng });
-    if (fromSidebar && map.getZoom() < 11) {
-      map.setZoom(12);
-    }
-
     // Prevent stale async updates when user clicks rapidly across multiple pins
     const requestToken = ++state.activeRequestToken;
+    cleanupInfoWindowTracking();
+
+    // When picking from the sidebar, jump to the station if zoomed out or offscreen;
+    // otherwise let ensureInfoWindowInView pan smoothly just enough to frame the card.
+    let cameraMoved = false;
+    if (fromSidebar) {
+      const targetPos = { lat: station.lat, lng: station.lng };
+      const needsZoom = map.getZoom() < 11;
+      const bounds = map.getBounds();
+      const isOffscreen = !bounds || !bounds.contains(targetPos);
+
+      if (needsZoom || isOffscreen) {
+        map.setCenter(targetPos);
+        if (needsZoom) {
+          map.setZoom(12);
+        }
+        cameraMoved = true;
+      }
+    }
 
     // Open InfoWindow immediately with station title header + heritage status + loading skeleton
     const headerEl = buildInfoWindowHeader(station);
@@ -666,6 +697,7 @@
       infoWindow.setHeaderContent(headerEl);
     }
     const container = buildInfoWindowShell(station, hasHeaderApi ? null : headerEl);
+    setupInfoWindowAutoPan(container, requestToken, cameraMoved);
     infoWindow.setContent(container);
     infoWindow.open({ anchor: marker, map });
 
@@ -737,10 +769,11 @@
     statusBar.appendChild(meta);
 
     const body = document.createElement("div");
-    body.className = "iw-body";
+    body.className = "iw-body is-loading";
     body.innerHTML = `
       <div class="iw-loading" aria-live="polite" aria-label="Loading Google Place card">
         <div class="iw-skeleton-img"></div>
+        <div class="iw-skeleton-line"></div>
         <div class="iw-skeleton-line"></div>
         <div class="iw-skeleton-line iw-skeleton-line--short"></div>
       </div>
@@ -749,6 +782,235 @@
     wrapper.appendChild(statusBar);
     wrapper.appendChild(body);
     return wrapper;
+  }
+
+  function cleanupInfoWindowTracking() {
+    if (iwResizeObserver) {
+      iwResizeObserver.disconnect();
+      iwResizeObserver = null;
+    }
+    if (iwDomReadyListener) {
+      google.maps.event.removeListener(iwDomReadyListener);
+      iwDomReadyListener = null;
+    }
+    if (iwMapDragListener) {
+      google.maps.event.removeListener(iwMapDragListener);
+      iwMapDragListener = null;
+    }
+    if (iwMapWheelHandler && dom.mapCanvas) {
+      dom.mapCanvas.removeEventListener("wheel", iwMapWheelHandler);
+      iwMapWheelHandler = null;
+    }
+    if (iwIdleListener) {
+      google.maps.event.removeListener(iwIdleListener);
+      iwIdleListener = null;
+    }
+    if (iwInitialIdleListener) {
+      google.maps.event.removeListener(iwInitialIdleListener);
+      iwInitialIdleListener = null;
+    }
+    if (iwRafId !== null) {
+      window.cancelAnimationFrame(iwRafId);
+      iwRafId = null;
+    }
+    if (iwFallbackTimer !== null) {
+      window.clearTimeout(iwFallbackTimer);
+      iwFallbackTimer = null;
+    }
+    iwPanning = false;
+    iwPendingReposition = false;
+    iwUserInteracted = false;
+    iwPanCount = 0;
+  }
+
+  function setupInfoWindowAutoPan(container, requestToken, waitForInitialIdle = false) {
+    if (!map || !infoWindow) return;
+
+    const onUserMapInteraction = () => {
+      iwUserInteracted = true;
+      iwPendingReposition = false;
+      if (iwResizeObserver) {
+        iwResizeObserver.disconnect();
+        iwResizeObserver = null;
+      }
+      if (iwRafId !== null) {
+        window.cancelAnimationFrame(iwRafId);
+        iwRafId = null;
+      }
+    };
+
+    iwMapDragListener = map.addListener("dragstart", onUserMapInteraction);
+    if (dom.mapCanvas) {
+      iwMapWheelHandler = (event) => {
+        // Ignore wheel scrolling inside the InfoWindow card itself
+        if (event.target && typeof event.target.closest === "function" && event.target.closest(".gm-style-iw-c")) {
+          return;
+        }
+        onUserMapInteraction();
+      };
+      dom.mapCanvas.addEventListener("wheel", iwMapWheelHandler, { passive: true });
+    }
+
+    const attachResizeObserver = () => {
+      if (iwUserInteracted || requestToken !== state.activeRequestToken) return;
+      if (typeof ResizeObserver === "undefined") return;
+
+      if (iwResizeObserver) {
+        iwResizeObserver.disconnect();
+      }
+
+      iwResizeObserver = new ResizeObserver(() => {
+        scheduleEnsureInfoWindowInView(container, requestToken);
+      });
+
+      const iwEl = container.closest(".gm-style-iw-c");
+      if (iwEl) {
+        iwResizeObserver.observe(iwEl);
+      }
+      iwResizeObserver.observe(container);
+
+      const placeDetails = container.querySelector("gmp-place-details-compact");
+      if (placeDetails) {
+        iwResizeObserver.observe(placeDetails);
+      }
+    };
+
+    iwDomReadyListener = google.maps.event.addListenerOnce(infoWindow, "domready", () => {
+      iwDomReadyListener = null;
+      if (requestToken !== state.activeRequestToken) return;
+      attachResizeObserver();
+      scheduleEnsureInfoWindowInView(container, requestToken);
+    });
+
+    if (waitForInitialIdle) {
+      iwInitialIdleListener = google.maps.event.addListenerOnce(map, "idle", () => {
+        iwInitialIdleListener = null;
+        if (requestToken !== state.activeRequestToken) return;
+        if (!iwResizeObserver) {
+          attachResizeObserver();
+        }
+        scheduleEnsureInfoWindowInView(container, requestToken);
+      });
+    }
+  }
+
+  function scheduleEnsureInfoWindowInView(container, requestToken) {
+    if (iwUserInteracted || requestToken !== state.activeRequestToken) return;
+    if (iwPanning) {
+      iwPendingReposition = true;
+      return;
+    }
+    if (iwRafId !== null) {
+      window.cancelAnimationFrame(iwRafId);
+    }
+    iwRafId = window.requestAnimationFrame(() => {
+      iwRafId = null;
+      ensureInfoWindowInView(container, requestToken);
+    });
+  }
+
+  function ensureInfoWindowInView(container, requestToken) {
+    if (iwUserInteracted || requestToken !== state.activeRequestToken) return;
+    if (!map || !dom.mapCanvas || !container || !container.isConnected) return;
+    if (iwPanCount >= 8) return;
+
+    const iwCard = container.closest(".gm-style-iw-c");
+    const iwEl = iwCard || container;
+    const mapRect = dom.mapCanvas.getBoundingClientRect();
+    const iwRect = iwEl.getBoundingClientRect();
+
+    if (mapRect.width <= 0 || mapRect.height <= 0 || iwRect.width <= 0 || iwRect.height <= 0) {
+      return;
+    }
+
+    // Reserve breathing room for top floating buttons, map controls, and marker pin below the card
+    const headerFallbackExtra = iwCard ? 0 : 48;
+    const preferredTopPad = 64 + headerFallbackExtra;
+    const minTopPad = 16 + headerFallbackExtra;
+    const preferredBottomPad = 72;
+    const minBottomPad = 24;
+
+    const availableVerticalSlack = mapRect.height - iwRect.height;
+    let topPad;
+    let bottomPad;
+    if (availableVerticalSlack >= preferredTopPad + preferredBottomPad) {
+      topPad = preferredTopPad;
+      bottomPad = preferredBottomPad;
+    } else if (availableVerticalSlack >= minTopPad + minBottomPad) {
+      topPad = Math.max(minTopPad, Math.min(preferredTopPad, Math.floor(availableVerticalSlack * 0.48)));
+      bottomPad = Math.max(minBottomPad, availableVerticalSlack - topPad);
+    } else {
+      topPad = 12 + headerFallbackExtra;
+      bottomPad = 12;
+    }
+
+    const sidePad = mapRect.width < 480 ? 12 : 20;
+    const safeTop = mapRect.top + topPad;
+    const safeBottom = mapRect.bottom - bottomPad;
+    const safeLeft = mapRect.left + sidePad;
+    const safeRight = mapRect.right - sidePad;
+
+    let dy = 0;
+    if (iwRect.top < safeTop) {
+      dy = iwRect.top - safeTop;
+    } else if (iwRect.bottom > safeBottom) {
+      const maxUpShift = Math.max(0, iwRect.top - safeTop);
+      dy = Math.min(iwRect.bottom - safeBottom, maxUpShift);
+    }
+
+    let dx = 0;
+    if (iwRect.left < safeLeft && iwRect.right > safeRight) {
+      const iwCenterX = (iwRect.left + iwRect.right) / 2;
+      const mapCenterX = (mapRect.left + mapRect.right) / 2;
+      dx = iwCenterX - mapCenterX;
+    } else if (iwRect.left < safeLeft) {
+      dx = iwRect.left - safeLeft;
+    } else if (iwRect.right > safeRight) {
+      const maxLeftShift = Math.max(0, iwRect.left - safeLeft);
+      dx = Math.min(iwRect.right - safeRight, maxLeftShift);
+    }
+
+    dx = Math.abs(dx) >= 2 ? Math.round(dx) : 0;
+    dy = Math.abs(dy) >= 2 ? Math.round(dy) : 0;
+
+    if (dx !== 0 || dy !== 0) {
+      panMapToFitInfoWindow(container, dx, dy, requestToken);
+    }
+  }
+
+  function panMapToFitInfoWindow(container, dx, dy, requestToken) {
+    iwPanning = true;
+    iwPendingReposition = false;
+    iwPanCount += 1;
+
+    if (iwIdleListener) {
+      google.maps.event.removeListener(iwIdleListener);
+      iwIdleListener = null;
+    }
+    if (iwFallbackTimer !== null) {
+      window.clearTimeout(iwFallbackTimer);
+      iwFallbackTimer = null;
+    }
+
+    const onPanSettled = () => {
+      if (iwIdleListener) {
+        google.maps.event.removeListener(iwIdleListener);
+        iwIdleListener = null;
+      }
+      if (iwFallbackTimer !== null) {
+        window.clearTimeout(iwFallbackTimer);
+        iwFallbackTimer = null;
+      }
+      iwPanning = false;
+      if (iwPendingReposition && !iwUserInteracted && requestToken === state.activeRequestToken) {
+        iwPendingReposition = false;
+        scheduleEnsureInfoWindowInView(container, requestToken);
+      }
+    };
+
+    iwIdleListener = google.maps.event.addListenerOnce(map, "idle", onPanSettled);
+    iwFallbackTimer = window.setTimeout(onPanSettled, 500);
+    map.panBy(dx, dy);
   }
 
   async function resolvePlaceId(station) {
@@ -831,6 +1093,7 @@
 
     let settled = false;
     const hideSkeleton = () => {
+      body.classList.remove("is-loading");
       const loader = body.querySelector(".iw-loading");
       if (loader) loader.remove();
     };
@@ -840,6 +1103,7 @@
       settled = true;
       hideSkeleton();
       placeDetails.style.opacity = "1";
+      scheduleEnsureInfoWindowInView(container, requestToken);
     };
 
     const handleError = (event) => {
@@ -863,18 +1127,23 @@
     placeDetails.style.opacity = "0";
     placeDetails.style.transition = "opacity 160ms ease";
     body.appendChild(placeDetails);
+    if (iwResizeObserver) {
+      iwResizeObserver.observe(placeDetails);
+    }
 
     // Safety fallback if the custom element takes too long or doesn't emit gmp-load
     window.setTimeout(() => {
       if (settled || requestToken !== state.activeRequestToken) return;
       hideSkeleton();
       placeDetails.style.opacity = "1";
+      scheduleEnsureInfoWindowInView(container, requestToken);
     }, 3500);
   }
 
   function renderFallbackCard(container, station, note, technicalDetail = "") {
     const body = container.querySelector(".iw-body");
     if (!body) return;
+    body.classList.remove("is-loading");
 
     const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
       station.placeQuery || `${station.name}, ${station.city}, ${station.state}`
@@ -899,6 +1168,7 @@
         </a>
       </div>
     `;
+    scheduleEnsureInfoWindowInView(container, state.activeRequestToken);
   }
 
   function escapeHtml(str) {
